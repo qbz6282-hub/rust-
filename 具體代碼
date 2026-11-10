@@ -1,0 +1,86 @@
+use std::borrow::Cow;
+use std::error::Error;
+use std::io::Write;
+use reqwest::Client;
+use serde::{ Serialize,Deserialize};
+use serde_json::{Value,json};
+//上面是依賴的聲明，全專案皆無人工智慧應用工程專用依賴庫
+
+#[derive(Serialize)]
+struct 對話請求<'q>{
+model:Cow<'q,str>,
+messages:&'q [Message<'q>],
+reasoning:enabled,
+}
+#[derive(Serialize)]
+struct enabled{
+#[serde(rename = "enable")]
+啟哉:bool,
+}
+
+#[derive(Serialize,Deserialize,Clone)]
+struct Message<'q>{
+role:Cow<'q,str>,//Cow類型可節省空間分配的資源消耗
+content:String,
+}
+#[derive(Deserialize)]
+struct 對話響應<'q>{
+#[serde(rename = "message")]
+訊息:Message<'q>
+}
+impl<'q> Message<'q>{
+fn 起會(角色:Cow<'q,str>,內容:String)->Self{
+Self{
+role:角色,
+content: 內容.to_string(),
+}
+}
+}
+#[tokio::main]
+async fn main()->Result<(),Box> {
+let 用戶=Client::new();
+let mut 上下文:Vec=Vec::new();
+let 網址="https://openrouter.ai/api/v1";
+loop {
+print!("尔言:\n");
+std::io::stdout().flush()?;
+let mut 提示詞=String::new();
+std::io::stdin().read_line(&mut 提示詞)?;
+let 提示詞=提示詞.trim();
+if 提示詞.is_empty(){//這表示用戶提示詞若為滾木則程序直接跑路，需再次cargo run以重新運行代碼
+break;
+}
+if 提示詞=="跑路"{
+break;
+}
+上下文.push(Message::起會(Cow::Borrowed("user"),提示詞.to_string()));
+let 請求資訊=對話請求{
+model:Cow::Borrowed("openrouter/free"),
+messages:&上下文,
+reasoning:enabled{啟哉:false}
+};
+match 寄柬(&用戶,網址,&請求資訊).await {
+Ok(a)=>{println!("模型:{}",a.訊息.content)}
+Err(_) => {println!("不錯")}
+}
+}
+Ok(())
+}
+async fn 寄柬<'q,'a>(用戶:&Client,網址:&str,對話請求: &對話請求<'q>)->Result<對話響應<'a>,Box>{
+let 密鑰="sk-or-v1-3770dbde94d9afb911a22185d...";//非完整密鑰，但為openrouter密鑰
+let 善=用戶.post(網址).header("Content-Type","application/json")
+.header("Authorization", format!("Bearer {}",密鑰)).json(&對話請求).send().await?;
+let 善狀態=&善.status();
+if !善狀態.is_success() {
+let d = 善.text().await?;
+eprintln!("\nHTTP狀態碼:{}", 善狀態);
+eprintln!("原始錯誤訊息:{}", d);
+if 善狀態.as_u16() == 429 {
+eprintln!("免費模型額度耗盡")
+}
+return Err("請求失敗".into());
+}
+let 響應= 善.json::<對話響應>().await?;
+Ok(響應)
+}
+//測試提示詞:今日台灣天氣
