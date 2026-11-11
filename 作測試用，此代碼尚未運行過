@@ -72,7 +72,7 @@ struct FunctionCall {
 #[tokio::main]
 async fn main() -> 結局<()> {
     let 用戶 = Client::new();
-    let mut 上下文: Vec<Message> = Vec::new();
+    let mut 上下文: Vec<Message<'static>> = Vec::new();
     let 網址 = "https://openrouter.ai/api/v1/chat/completions";
 
     // 定義工具：包含語言與代碼欄位
