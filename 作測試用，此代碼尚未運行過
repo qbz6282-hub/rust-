@@ -1,0 +1,242 @@
+use base64::{engine::general_purpose, Engine as _};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::borrow::Cow;
+use std::error::Error;
+use std::io::Write;
+
+// 定義專用的 Result 型別，以兼容 tokio 的非同步錯誤
+type 結局<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+// ================= 結構體定義 =================
+
+#[derive(Serialize, Debug)]
+struct 對話請求<'q> {
+    model: Cow<'q, str>,
+    messages: &'q [Message<'q>],
+    reasoning: enabled,
+    tools: Option<&'q [Value]>,
+}
+
+#[derive(Serialize, Debug)]
+struct enabled {
+    #[serde(rename = "enable")]
+    啟哉: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct Message<'q> {
+    role: Cow<'q, str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ToolCall>>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
+}
+
+impl<'q> Message<'q> {
+    fn 起會(角色: Cow<'q, str>, 內容: String) -> Self {
+        Self {
+            role: 角色,
+            content: Some(內容),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct 對話響應<'q> {
+    #[serde(rename = "message")]
+    訊息: Message<'q>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    call_type: String,
+    function: FunctionCall,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct FunctionCall {
+    name: String,
+    arguments: String,
+}
+
+// ================= 核心邏輯 =================
+
+#[tokio::main]
+async fn main() -> 結局<()> {
+    let 用戶 = Client::new();
+    let mut 上下文: Vec<Message> = Vec::new();
+    let 網址 = "https://openrouter.ai/api/v1/chat/completions";
+
+    // 定義工具：包含語言與代碼欄位
+    let 利器 = vec![json!({
+        "type": "function",
+        "function": {
+            "name": "行沙箱代碼",
+            "description": "在隔離的 Podman 沙箱中執行程式碼。支援 python 與 rust。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "語言": {
+                        "type": "string",
+                        "enum": ["python", "rust"],
+                        "description": "欲執行之程式語言"
+                    },
+                    "代碼": {
+                        "type": "string",
+                        "description": "完整之程式碼字串"
+                    }
+                },
+                "required": ["語言", "代碼"]
+            }
+        }
+    })];
+
+    println!("?!善善!? === 滾木沙箱模型 === ?!善善!?");
+    println!("(輸入 '跑路或滾木' 離開程式)");
+
+    loop {
+        print!("\n尔言:\n");
+        std::io::stdout().flush()?;
+        let mut 提示詞 = String::new();
+        std::io::stdin().read_line(&mut 提示詞)?;
+        let 提示詞 = 提示詞.trim();
+
+        if 提示詞.is_empty() || 提示詞 == "跑路" || 提示詞 == "滾木" {
+            break;
+        }
+
+        上下文.push(Message::起會(Cow::Borrowed("user"), 提示詞.to_string()));
+
+        // Agent 內部迴圈
+        loop {
+            let 請求資訊 = 對話請求 {
+                model: Cow::Borrowed("openrouter/free"),
+                messages: &上下文,
+                reasoning: enabled { 啟哉: false },
+                tools: Some(&利器),
+            };
+
+            match 寄柬(&用戶, 網址, &請求資訊).await {
+                Ok(響應) => {
+                    let 模型訊息 = 響應.訊息;
+                    
+                    if let Some(工具集) = &模型訊息.tool_calls {
+                        上下文.push(模型訊息.clone());
+                        
+                        for 工具 in 工具集 {
+                            println!("[系統] 模型請求執行工具: {}", 工具.function.name);
+                            let 執行結果 = 行沙箱代碼(&工具.function).await;
+                            
+                            let 工具回覆 = Message {
+                                role: Cow::Borrowed("tool"),
+                                content: Some(執行結果),
+                                tool_calls: None,
+                                tool_call_id: Some(工具.id.clone()),
+                            };
+                            上下文.push(工具回覆);
+                        }
+                        continue; 
+                    }
+
+                    if let Some(內容) = &模型訊息.content {
+                        println!("模型:\n{}", 內容);
+                    }
+                    上下文.push(模型訊息);
+                    break;
+                }
+                Err(e) => {
+                    println!("[錯誤] 請求失敗: {}", e);
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 解析參數並啟動 Podman 沙箱
+async fn 行沙箱代碼(術: &FunctionCall) -> String {
+    let 參數: Value = match serde_json::from_str(&術.arguments) {
+        Ok(v) => v,
+        Err(_) => return "參數解析失敗".to_string(),
+    };
+
+    let 語言 = 參數["語言"].as_str().unwrap_or("python");
+    let 代碼 = 參數["代碼"].as_str().unwrap_or("");
+
+    // 使用 Base64 編碼代碼，徹底避免多行代碼與引號的轉義問題
+    let 密文 = general_purpose::STANDARD.encode(代碼);
+
+    let (映像, 容器內指令) = if 語言 == "python" {
+        (
+            "docker.io/library/python:3.12-slim",
+            format!("echo '{}' | base64 -d > /tmp/main.py && python /tmp/main.py", 密文),
+        )
+    } else {
+        (
+            "docker.io/library/rust:1-slim-bookworm",
+            format!("cargo init --name 沙箱專案 -q /tmp/rust_zuan1an4 && \
+                 echo '{}' | base64 -d > /tmp/rust_zuan1an4/src/main.rs && \
+                 cd /tmp/rust_zuan1an4 && cargo run", 密文),
+        )
+    };
+
+    /// 啟動 Podman 容器
+    match tokio::process::Command::new("podman")
+        .args(["run", "--rm", 映像, "bash", "-c", &容器內指令])
+        .output()
+        .await
+    {
+        Ok(輸出) => {
+            let 標準輸出 = String::from_utf8_lossy(&輸出.stdout);
+            let 標準錯誤 = String::from_utf8_lossy(&輸出.stderr);
+            let 狀態碼 = 輸出.status.code().unwrap_or(-1);
+            
+            if 狀態碼 == 0 {
+                format!("執行成功 (狀態碼 0):\n{}", 標準輸出)
+            } else {
+                format!("執行失敗 (狀態碼 {}):\n標準輸出:\n{}\n標準錯誤:\n{}", 狀態碼, 標準輸出, 標準錯誤)
+            }
+        }
+        Err(e) => format!("無法啟動 Podman 沙箱 (請確認 WSL 內已安裝 Podman): {}", e),
+    }
+}
+
+
+async fn 寄柬<'q, 'a>(
+    用戶: &Client,
+    網址: &str,
+    對話請求: &對話請求<'q>,
+) -> 結局<對話響應<'a>> {
+    let 密鑰 = "sk-or-v1-3770dbde94d9afb911a22185d..."; // 請替換為真實 Key
+
+    let 善 = 用戶
+        .post(網址)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", 密鑰))
+        .json(對話請求)
+        .send()
+        .await?;
+
+    let 善狀態 = &善.status();
+    if !善狀態.is_success() {
+        let d = 善.text().await?;
+        eprintln!("\nHTTP狀態碼: {}", 善狀態);
+        eprintln!("原始錯誤訊息: {}", d);
+        if 善狀態.as_u16() == 429 {
+            eprintln!("免費模型額度耗盡");
+        }
+        return Err("請求失敗".into());
+    }
+
+    let 響應 = 善.json::<對話響應>().await?;
+    Ok(響應)
+}
