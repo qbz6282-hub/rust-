@@ -1,4 +1,4 @@
-mod adapter;
+mod apdater;
 
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client;
@@ -7,8 +7,9 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::error::Error;
 use std::io::Write;
+use clap::Parser;
 
-use adapter::{建立適配器, 後端種類, 後端適配器, 工具策略};
+use apdater::{建立適配器, 後端種類, 後端適配器, 工具策略};
 
 // 定義專用的 Result 型別，以兼容 tokio 的非同步錯誤
 pub(crate) type 結局<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -84,13 +85,18 @@ struct FunctionCall {
     arguments: String,
 }
 
+#[derive(Parser)]
+struct 路徑參數{
+    #[arg(long,default_value = "/mnt/c/善")]
+    路徑: String,
+}
 // ================= 後端選擇 =================
 
 /// 優先順序：命令列第一個參數 > AI_BACKEND > config.json 的 backend > 預設 ollama
 fn 讀取後端種類() -> 後端種類 {
     let 指定 = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| adapter::設定值("", "backend", "AI_BACKEND", "ollama"));
+        .unwrap_or_else(|| apdater::設定值("", "backend", "AI_BACKEND", "ollama"));
 
     match 後端種類::解析(&指定) {
         Some(種類) => 種類,
@@ -130,8 +136,9 @@ async fn main() -> 結局<()> {
     let mut 上下文: Vec<Message<'static>> = Vec::new();
     let mut 適配器 = 建立適配器(讀取後端種類())?;
     // auto 模式會向後端查一次模型能力（Ollama 用 /api/show）
-    adapter::預備工具能力(&用戶, &mut *適配器).await;
-
+    apdater::預備工具能力(&用戶, &mut *適配器).await;
+    let 參數 = 路徑參數::parse();
+    let 證據路徑 = 參數.路徑;
     let 利器 = vec![json!({
         "type": "function",
         "function": {
@@ -181,7 +188,7 @@ async fn main() -> 結局<()> {
                 Some(種類) => match 建立適配器(種類) {
                     Ok(新適配器) => {
                         適配器 = 新適配器;
-                        adapter::預備工具能力(&用戶, &mut *適配器).await;
+                        apdater::預備工具能力(&用戶, &mut *適配器).await;
                         印出後端資訊(&*適配器);
                     }
                     Err(e) => eprintln!("[錯誤] 無法建立適配器: {}", e),
@@ -195,7 +202,7 @@ async fn main() -> 結局<()> {
                 eprintln!("請輸入模型名稱，例如：模型 qwen2.5vl:7b");
             } else {
                 適配器.改模型(名.trim().to_string());
-                adapter::重探工具能力(&用戶, &mut *適配器).await;
+                apdater::重探工具能力(&用戶, &mut *適配器).await;
                 println!("[系統] 模型已設為 {} | 工具請求: {}", 適配器.模型(), 適配器.工具設定().狀態());
             }
             continue;
@@ -207,7 +214,7 @@ async fn main() -> 結局<()> {
             continue;
         }
         if 提示詞 == "工具 重探" {
-            adapter::重探工具能力(&用戶, &mut *適配器).await;
+            apdater::重探工具能力(&用戶, &mut *適配器).await;
             println!("[系統] 工具請求: {}", 適配器.工具設定().狀態());
             continue;
         }
@@ -215,7 +222,7 @@ async fn main() -> 結局<()> {
             match 工具策略::解析(值) {
                 Some(策略) => {
                     適配器.設工具策略(策略);
-                    adapter::預備工具能力(&用戶, &mut *適配器).await;
+                    apdater::預備工具能力(&用戶, &mut *適配器).await;
                     println!("[系統] 工具請求: {}", 適配器.工具設定().狀態());
                     if !適配器.送出工具() && 工具痕跡數(&上下文) > 0 {
                         println!(
@@ -241,7 +248,7 @@ async fn main() -> 結局<()> {
             };
 
             // 寄柬：統一傳輸層只把原始網路緩衝區 (Bytes) 撈回來，生命週期由當前迴圈掌控
-            match adapter::寄柬(&用戶, &*適配器, &請求資訊).await {
+            match apdater::寄柬(&用戶, &*適配器, &請求資訊).await {
                 Ok(正規化緩衝區) => {
                     // 直接從緩衝區切片進行零拷貝反序列化！
                     // 若該後端格式無需改寫，這裡拿到的就是未經複製的原始 bytes。
@@ -271,7 +278,7 @@ async fn main() -> 結局<()> {
 
                         for 工具 in 工具集 {
                             println!("[系統] {} 請求執行工具: {}", 適配器.名稱(), 工具.function.name);
-                            let 執行結果 = run_code(&工具.function).await;
+                            let 執行結果 = run_code(&工具.function, &證據路徑).await;
 
                             let 工具回覆 = Message {
                                 role: Cow::Borrowed("tool"),
@@ -308,7 +315,7 @@ async fn main() -> 結局<()> {
 }
 
 /// 解析參數並啟動 Podman 沙箱
-async fn run_code(術: &FunctionCall) -> String {
+async fn run_code(術: &FunctionCall, 證據路徑: &str) -> String {
     let 參數: Value = match serde_json::from_str(&術.arguments) {
         Ok(v) => v,
         Err(_) => return "參數解析失敗".to_string(),
@@ -319,22 +326,35 @@ async fn run_code(術: &FunctionCall) -> String {
 
     let 密文 = general_purpose::STANDARD.encode(代碼);
 
+    // 將寫入路徑改為 /app，這樣會被掛載到 Windows 資料夾
     let (映像, 容器內指令) = if 語言 == "python" {
         (
             "docker.io/library/python:3.12-slim",
-            format!("echo '{}' | base64 -d > /tmp/main.py && python /tmp/main.py", 密文),
+            format!(
+                "mkdir -p /app/ai_sandbox_evidence && \
+                 echo '{}' | base64 -d > /app/ai_sandbox_evidence/main.py && \
+                 python /app/ai_sandbox_evidence/main.py",
+                密文
+            ),
         )
-    } else {
-        (
-            "docker.io/library/rust:1-slim-bookworm",
-            format!("cargo init --name 沙箱專案 -q /tmp/rust_zuan1an4 && \
-                 echo '{}' | base64 -d > /tmp/rust_zuan1an4/src/main.rs && \
-                 cd /tmp/rust_zuan1an4 && cargo run", 密文),
+    }else if 語言 =="rust"{
+        ("docker.io/library/rust:1-slim-bookworm", format!("rm -rf /app/ai_sandbox_evidence && \
+                 mkdir -p /app/ai_sandbox_evidence && \
+                 cargo init --name 沙箱專案 -q /app/ai_sandbox_evidence && \
+                 echo '{}' | base64 -d > /app/ai_sandbox_evidence/src/main.rs && \
+                 cd /app/ai_sandbox_evidence && cargo run", 密文),
         )
+    }else{
+        ("", "".to_string())
     };
-
+    // 啟動 Podman 容器，加入 -v 掛載與 -w 工作目錄
     match tokio::process::Command::new("podman")
-        .args(["run", "--rm", 映像, "bash", "-c", &容器內指令])
+        .args([
+            "run", "--rm",
+            "-v", &format!("{}:/app", 證據路徑),
+            "-w", "/app",
+            映像, "bash", "-c", &容器內指令
+        ])
         .output()
         .await
     {
