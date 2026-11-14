@@ -12,7 +12,7 @@
     "host": "http://localhost:11434",
     "model": "qwen2.5vl:7b",
     "native": false,
-    "tools": "auto"
+    "tools": "auto"//auto即中文"自動"，含意是代碼自主詢問模型是否支持工具調用，是則添加工具相關請求，否則反之
   },
   "lmstudio": {
     "host": "http://localhost:1234",
