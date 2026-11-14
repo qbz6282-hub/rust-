@@ -3,7 +3,7 @@
   "tools": "auto",
   "timeout_secs": 300,
   "openrouter": {
-    "api_key": "sk-or-v1-9ce4ca04665c58f0dd5512",
+    "api_key": "sk-or-v1-9ce4ca04665c58f0dd5512",//此為非完整密鑰，前往相關平台申請相關密鑰便是
     "model": "google/gemma-4-26b-a4b-it:free",
     "base_url": "https://openrouter.ai/api/v1",
     "tools": "on"
