@@ -1,5 +1,5 @@
 {
-  "backend": "openrouter",
+  "backend": "openrouter",//含意為預設供給方為openrouter
   "tools": "auto",
   "timeout_secs": 300,
   "openrouter": {
@@ -17,6 +17,6 @@
   "lmstudio": {
     "host": "http://localhost:1234",
     "model": "qwen/qwen3-vl-4b",
-    "tools": "啟"
+    "tools": "啟"//支持中文的"啟"與"開"，在命令行或稱終端的日誌中，實際運行時可以:"後端 平台名稱"與"工具 開、啟、閉、關、英文版的on、off、auto"，和"模型 可用模型名稱"，若想添加其他關鍵字，可前往相關代碼處自行修改
   }
 }
