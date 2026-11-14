@@ -167,7 +167,12 @@ async fn main() -> 結局<()> {
     println!("(輸入 '跑路' 或 '滾木' 離開程式)");
     println!("指令: '後端 <{}>' · '模型 <名稱>' · '工具 on|off|auto|重探' · '清空' · '後端' 查看現況", 後端種類::選單());
 
+    let mut 工具步數 = 0;
+    const 最大工具步數: usize = 5;
+
     loop {
+        工具步數 += 1;
+
         print!("\n尔言:\n");
         std::io::stdout().flush()?;
         let mut 輸入 = String::new();
@@ -240,6 +245,7 @@ async fn main() -> 結局<()> {
 
         // Agent 內部迴圈
         loop {
+
             // 模型識別字由適配器決定；tools 一律先給，是否真的送出由傳輸層依工具策略把關
             let 請求資訊 = 對話請求 {
                 model: Cow::Borrowed(適配器.模型()),
@@ -279,7 +285,7 @@ async fn main() -> 結局<()> {
                         for 工具 in 工具集 {
                             println!("[系統] {} 請求執行工具: {}", 適配器.名稱(), 工具.function.name);
                             let 執行結果 = run_code(&工具.function, &證據路徑).await;
-
+                            println!("[沙箱回報] {}", 執行結果.trim());
                             let 工具回覆 = Message {
                                 role: Cow::Borrowed("tool"),
                                 content: Some(Cow::Owned(執行結果)),
@@ -308,7 +314,13 @@ async fn main() -> 結局<()> {
                     上下文.pop();
                     break;
                 }
+
             }
+
+        }
+        if 工具步數 > 最大工具步數 {
+            println!("[系統熔斷] 模型連續呼叫工具超過 {} 次，已強制中斷迴圈。", 最大工具步數);
+            break;
         }
     }
     Ok(())
@@ -323,12 +335,10 @@ async fn run_code(術: &FunctionCall, 證據路徑: &str) -> String {
 
     let 語言 = 參數["語言"].as_str().unwrap_or("python");
     let 代碼 = 參數["代碼"].as_str().unwrap_or("");
-
     let 密文 = general_purpose::STANDARD.encode(代碼);
 
-    // 將寫入路徑改為 /app，這樣會被掛載到 Windows 資料夾
-    let (映像, 容器內指令) = if 語言 == "python" {
-        (
+    let (映像, 容器內指令) = match 語言 {
+        "python" => (
             "docker.io/library/python:3.12-slim",
             format!(
                 "mkdir -p /app/ai_sandbox_evidence && \
@@ -336,18 +346,21 @@ async fn run_code(術: &FunctionCall, 證據路徑: &str) -> String {
                  python /app/ai_sandbox_evidence/main.py",
                 密文
             ),
-        )
-    }else if 語言 =="rust"{
-        ("docker.io/library/rust:1-slim-bookworm", format!("rm -rf /app/ai_sandbox_evidence && \
-                 mkdir -p /app/ai_sandbox_evidence && \
-                 cargo init --name 沙箱專案 -q /app/ai_sandbox_evidence && \
-                 echo '{}' | base64 -d > /app/ai_sandbox_evidence/src/main.rs && \
-                 cd /app/ai_sandbox_evidence && cargo run", 密文),
-        )
-    }else{
-        ("", "".to_string())
+        ),
+        "rust" => (
+            "docker.io/library/rust:1-slim-bookworm",
+            format!(
+                "mkdir -p /app/ai_sandbox_evidence && \
+                 cd /app/ai_sandbox_evidence && \
+                 ([ -f Cargo.toml ] || cargo init --name sandbox_proj -q) && \
+                 echo '{}' | base64 -d > src/main.rs && \
+                 cargo run --quiet",
+                密文
+            ),
+        ),
+        _ => return format!("不支援的程式語言：{}（僅支援 python 或 rust）", 語言),
     };
-    // 啟動 Podman 容器，加入 -v 掛載與 -w 工作目錄
+
     match tokio::process::Command::new("podman")
         .args([
             "run", "--rm",
