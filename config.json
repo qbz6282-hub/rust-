@@ -1,0 +1,22 @@
+{
+  "backend": "openrouter",
+  "tools": "auto",
+  "timeout_secs": 300,
+  "openrouter": {
+    "api_key": "sk-or-v1-9ce4ca04665c58f0dd5512",
+    "model": "google/gemma-4-26b-a4b-it:free",
+    "base_url": "https://openrouter.ai/api/v1",
+    "tools": "on"
+  },
+  "ollama": {
+    "host": "http://localhost:11434",
+    "model": "qwen2.5vl:7b",
+    "native": false,
+    "tools": "auto"
+  },
+  "lmstudio": {
+    "host": "http://localhost:1234",
+    "model": "qwen/qwen3-vl-4b",
+    "tools": "啟"
+  }
+}
