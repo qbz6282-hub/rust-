@@ -13,7 +13,7 @@
 | `src/main.rs` | 對話主迴圈、工具呼叫、Podman 沙箱 |
 | `src/adapter.rs` | 多後端統一適配器：端點、標頭、格式正規化、工具能力 |
 | `Cargo.toml` / `Cargo.lock` | 依賴與版本鎖定 |
-| `config.example.json` | 設定範本（請複製成 `config.json` 再填） |
+| `config.json` | 設定範本（複製成 `config.json` 再填） |
 | `docs/` | 開發紀錄、原始說明 |
 | `archive/` | 早期版本原始碼，**僅供對照，不可編譯** |
 | `examples/` | 模型在沙箱裡產生的範例腳本 |
@@ -72,7 +72,7 @@ Ollama 另可用 `OLLAMA_NATIVE=1` 切到原生 `/api/chat` 格式。
 | --- | --- | --- |
 | v1 | `archive/v1_first_draft.rs.txt` | 最初的對話程式，無 AI 協助 |
 | v2 | `archive/v2_sandbox_draft.rs.txt` | 加入 `tools` 與 Podman 沙箱，未實測 |
-| v3 | `archive/v3_main.rs.txt`、`v3_adapter.rs.txt` | 另一分支的適配器版本 |
+| v3 | `archive/v3_main.rs`，`v3_adapter.rs`，`v3_gui.rs`| 另一分支的適配器版本 |
 | 現行 | `src/` | 三後端統一適配器 + 工具能力偵測，可編譯、有單元測試 |
 
 詳細緣由見 `docs/開發紀錄.md`。`archive/RWKV6.rs.txt` 與 `examples/model_generated_multiply.py` 是當時模型在沙箱裡生成的產物，獨立保留。
