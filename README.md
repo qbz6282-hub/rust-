@@ -63,7 +63,7 @@ Ollama 另可用 `OLLAMA_NATIVE=1` 切到原生 `/api/chat` 格式。
 ## 環境需求
 
 - Rust（edition 2024）
-- 三个後端擇一：本機裝 Ollama 或 LM Studio，或申請 OpenRouter API Key
+- 三個後端擇一：本機裝 Ollama 或 LM Studio，或申請 OpenRouter API Key
 - **Podman**：Windows 11 家用版沒有 Hyper-V，需啟用「虛擬機器平台」與 WSL2，並先啟動 Podman Machine，`podman run` 才會動
 
 ## 版本沿革
