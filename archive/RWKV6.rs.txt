@@ -31,6 +31,7 @@ const T: usize = 6;      // 時間步數
 const C: usize = 4;      // 通道數 (channel / head dim)
 const D_RANK: usize = 2; // 低秩維度 (LoRA rank)
 
+
 // ============================ 工具函式 ============================
 /// 簡單 xorshift 亂數（教學用、可重現），回傳 [-1, 1)
 fn next_rand(seed: &mut u32) -> f32 {
