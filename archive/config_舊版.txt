@@ -1,0 +1,22 @@
+{
+  "backend": "openrouter",//含意為預設供給方為openrouter
+  "tools": "auto",
+  "timeout_secs": 300,
+  "openrouter": {
+    "api_key": "<REDACTED-請至 openrouter.ai/keys 撤銷此金鑰>",//此為非完整密鑰，前往相關平台申請相關密鑰便是
+    "model": "google/gemma-4-26b-a4b-it:free",
+    "base_url": "https://openrouter.ai/api/v1",
+    "tools": "on"
+  },
+  "ollama": {
+    "host": "http://localhost:11434",
+    "model": "qwen2.5vl:7b",
+    "native": false,
+    "tools": "auto"//auto即中文"自動"，含意是代碼自主詢問模型是否支持工具調用，是則添加工具相關請求，否則反之
+  },
+  "lmstudio": {
+    "host": "http://localhost:1234",
+    "model": "qwen/qwen3-vl-4b",
+    "tools": "啟"//支持中文的"啟"與"開"，在命令行或稱終端的日誌中，實際運行時可以:"後端 平台名稱"與"工具 開、啟、閉、關、英文版的on、off、auto"，和"模型 可用模型名稱"，若想添加其他關鍵字，可前往相關代碼處自行修改
+  }
+}

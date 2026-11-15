@@ -1,0 +1,22 @@
+{
+  "backend": "ollama",
+  "tools": "auto",
+  "timeout_secs": 300,
+  "openrouter": {
+    "api_key": "",
+    "model": "openai/gpt-4o-mini",
+    "base_url": "https://openrouter.ai/api/v1",
+    "tools": "auto"
+  },
+  "ollama": {
+    "host": "http://localhost:11434",
+    "model": "qwen2.5vl:7b",
+    "native": false,
+    "tools": "auto"
+  },
+  "lmstudio": {
+    "host": "http://localhost:1234",
+    "model": "local-model",
+    "tools": "auto"
+  }
+}

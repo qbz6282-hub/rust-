@@ -216,7 +216,7 @@ async fn 寄柬<'q, 'a>(
     網址: &str,
     對話請求: &對話請求<'q>,
 ) -> 結局<對話響應<'a>> {
-    let 密鑰 = "sk-or-v1-3770dbde94d9afb911a22185d..."; // 請替換為真實 Key
+    let 密鑰 = "<REDACTED-請至 openrouter.ai/keys 撤銷此金鑰>..."; // 請替換為真實 Key
 
     let 善 = 用戶
         .post(網址)

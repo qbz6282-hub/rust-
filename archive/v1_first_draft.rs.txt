@@ -67,7 +67,7 @@ Err(_) => {println!("不錯")}
 Ok(())
 }
 async fn 寄柬<'q,'a>(用戶:&Client,網址:&str,對話請求: &對話請求<'q>)->Result<對話響應<'a>,Box>{
-let 密鑰="sk-or-v1-3770dbde94d9afb911a22185d...";//非完整密鑰，但為openrouter密鑰
+let 密鑰="<REDACTED-請至 openrouter.ai/keys 撤銷此金鑰>...";//非完整密鑰，但為openrouter密鑰
 let 善=用戶.post(網址).header("Content-Type","application/json")
 .header("Authorization", format!("Bearer {}",密鑰)).json(&對話請求).send().await?;
 let 善狀態=&善.status();
