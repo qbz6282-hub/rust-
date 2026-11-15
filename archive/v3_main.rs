@@ -66,8 +66,7 @@ impl<'q> Message<'q> {
         }
     }
 
-    /// 關鍵轉換方法：當這輪對話結束，需要把借用自網路緩衝區的臨時訊息，
-    /// 轉化為擁有獨立所有權的 'static 訊息，才能安全存入永久的 `上下文` Vec 中
+    /// 關鍵轉換方法：當這輪對話結束，需要把借用自網路緩衝區的臨時訊息，轉化為擁有獨立所有權的 'static 訊息，才能安全存入永久的 `上下文` Vec 中
     fn 轉為永久所有權(self) -> Message<'static> {
         Message {
             role: Cow::Owned(self.role.into_owned()),
@@ -113,8 +112,7 @@ pub(crate) fn 證據路徑() -> String {
 
 /// 優先順序：命令列第一個參數 > AI_BACKEND > config.json 的 backend > 預設 ollama
 pub(crate) fn 讀取後端種類() -> 後端種類 {
-    // 只取「非旗標」的第一個位置參數；--cli、--help 這類開頭 -- 的一律略過，
-    // 否則 GUI 模式或帶旗標啟動時會把旗標誤認成後端名稱。
+    // 只取「非旗標」的第一個位置參數；--cli、--help 這類開頭 -- 的一律略過，否則 GUI 模式或帶旗標啟動時會把旗標誤認成後端名稱。
     let 指定 = std::env::args()
         .skip(1)
         .find(|a| !a.starts_with("--"))
@@ -153,8 +151,7 @@ fn 工具痕跡數(上下文: &[Message<'static>]) -> usize {
 // ================= 進入點 =================
 
 fn main() -> 結局<()> {
-    // 預設啟動圖形介面；加 --cli 回到原本的命令列模式。
-    // eframe::run_native 會接管主執行緒，所以 main 必須是同步函式，
+    // 預設為圖形介面；加 --cli 回到原本的命令列模式。eframe::run_native 會接管主執行緒，所以 main 必須是同步函式，
     // async 的 runtime 交給 GUI 的背景工作執行緒（見 gui.rs）或 CLI 自建。
     if !std::env::args().any(|a| a == "--cli") {
         return gui::啟動();
@@ -287,8 +284,8 @@ async fn 命令列模式() -> 結局<()> {
             // 寄柬：統一傳輸層只把原始網路緩衝區 (Bytes) 撈回來，生命週期由當前迴圈掌控
             match apdater::寄柬(&用戶, &*適配器, &請求資訊).await {
                 Ok(正規化緩衝區) => {
-                    // 直接從緩衝區切片進行零拷貝反序列化！
-                    // 若該後端格式無需改寫，這裡拿到的就是未經複製的原始 bytes。
+                    // 直接從緩衝區切片進行零拷貝再反序列化！
+                    // 若該後端格式無需改寫，這裡拿到的就是未經複製的原始 字節(bytes)。
                     let 響應: 對話響應 = match serde_json::from_slice(&正規化緩衝區) {
                         Ok(r) => r,
                         Err(e) => {
@@ -309,7 +306,7 @@ async fn 命令列模式() -> 結局<()> {
                     let 模型訊息 = 首選.訊息;
                     let 允許工具 = 適配器.送出工具();
 
-                    // 純文字模式下，即使模型幻覺出 tool_calls 也不啟動 Podman
+                    // 純文字模式下，即使模型幻覺出 tool_calls 也不啟動 Podman。
                     if let Some(工具集) = 模型訊息.tool_calls.as_ref().filter(|組| 允許工具 && !組.is_empty()) {
                         上下文.push(模型訊息.clone().轉為永久所有權());
 
@@ -445,7 +442,7 @@ impl<'q> Message<'q> {
     }
 
     /// 關鍵轉換方法：當這輪對話結束，需要把借用自網路緩衝區的臨時訊息，
-    /// 轉化為擁有獨立所有權的 'static 訊息，才能安全存入永久的 `上下文` Vec 中
+    /// 轉化為擁有獨立所有權的 'static 訊息，才能安全存入永久的`上下文`中
     fn 轉為永久所有權(self) -> Message<'static> {
         Message {
             role: Cow::Owned(self.role.into_owned()),
