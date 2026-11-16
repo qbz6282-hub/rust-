@@ -94,8 +94,7 @@ fn 建立利器() -> Vec<Value> {
     })]
 }
 
-/// egui 內建字型不含中文字，直接載入 Windows 系統字型。
-/// 回傳實際採用的路徑，方便在介面上顯示。
+
 fn 載入中文字型(ctx: &egui::Context) -> String {
     // 優先選單一 TTF（可變字重檔），TTC 字型集合往後放
     let 候選 = [
@@ -126,7 +125,7 @@ fn 載入中文字型(ctx: &egui::Context) -> String {
 }
 
 // ===================================
-// 背景工作執行緒：所有 async 都活在這裡
+// 背景工作執行緒，所有 async 皆存在於此
 // ===================================
 
 fn 啟動背景工作(指令收: Receiver<指令>, 回報送: Sender<回報>, 上下文: egui::Context) {
@@ -153,8 +152,7 @@ fn 啟動背景工作(指令收: Receiver<指令>, 回報送: Sender<回報>, �
             let 利器 = 建立利器();
             let 證據路徑 = 證據路徑();
 
-            // 啟動時的能力探測也是 async，但在這裡用 block_on 完全沒問題，
-            // 因為這條執行緒本來就專門負責等待，不是畫圖的主執行緒。
+            
             rt.block_on(apdater::預備工具能力(&用戶, &mut *適配器));
 
             推送(&回報送, &上下文, 回報::狀態(狀態文字(&*適配器)));
@@ -177,8 +175,8 @@ fn 啟動背景工作(指令收: Receiver<指令>, 回報送: Sender<回報>, �
         .expect("無法啟動背景工作執行緒");
 }
 
-/// 一則指令 = 一個完整的 agent 回合（可能含多次工具呼叫）。
-/// 邊跑邊送回報，所以工具執行過程也能即時顯示在畫面上。
+/// 一則指令，便是一個完整的 agent 回合（可能含多次工具呼叫）。
+/// 邊運行邊回報，所以工具執行過程也能即時顯示在畫面上。
 async fn 處理指令(
     指令: 指令,
     適配器: &mut Box<dyn 後端適配器>,
@@ -334,15 +332,19 @@ async fn 處理指令(
     }
 }
 
-// ==================================================================
+// =======================
 // 前景：egui 應用程式
-// ==================================================================
+// =======================
 
 pub struct GuiApp {
     輸入框: String,
     聊天記錄: Vec<String>,
     狀態列: String,
     忙碌: bool,
+    /// 注音／中文輸入法是否正在組字（Preedit 中）。
+    /// 如此組字時`Enter`方為「選字」，而非「送出」。
+    注音組字中: bool,
+    待送出: bool,
 
     選定後端: 後端種類,
     選定工具: 工具策略,
@@ -365,6 +367,8 @@ impl GuiApp {
             聊天記錄: vec![format!("[系統] 中文字型：{}", 字型)],
             狀態列: "正在初始化…".into(),
             忙碌: false,
+            注音組字中: false,
+            待送出: false,
             選定後端: 讀取後端種類(),
             選定工具: 工具策略::自動,
             模型輸入: String::new(),
@@ -394,13 +398,60 @@ impl GuiApp {
             }
         }
     }
+
+    /// 在「任何」TextEdit 處理事件之前呼叫（頂部的模型輸入框也是 TextEdit，會抹除事件）。
+    /// 一次讀取同時完成兩件事：
+    ///   1. 追蹤注音是否正在組字（Preedit 中的 Enter 是選字，不是送出）
+    ///   2. 判斷這一幀是否按了「全新的」Enter（排除按住不放的 key-repeat）
+    /// 回傳：是否為有效的`送出Enter`(還需搭配輸入框有無焦點)
+    fn 讀取輸入事件(&mut self, ctx: &egui::Context) -> bool {
+        ctx.input(|i| {
+            let mut 按下全新按鍵 = false;
+            let mut 本幀剛選字 = false;
+            for 事件 in &i.events {
+                match 事件 {
+                    //此時的 Enter 是「選字」，即:打出ㄅㄨˊㄕˋㄍㄜ ㄇㄣ˙等注音，下方會現虛線，這便是【選自】
+                    egui::Event::Ime(egui::ImeEvent::Preedit { .. }) => {
+                        self.注音組字中 = true;
+                    }
+                    // 選字完成：清除組字狀態，但要記住「本幀剛選字」
+                    // Windows 注音'''有時'''會把 Commit 與 Key::Enter 放在同一幀，
+                    // 那個 Enter 是選字副作用，不能當成送出。
+                    egui::Event::Ime(egui::ImeEvent::Commit(_)) => {
+                        self.注音組字中 = false;
+                        本幀剛選字 = true;
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => 按下全新按鍵 = true,
+                    _ => {}
+                }
+            }
+            按下全新按鍵 && !本幀剛選字
+        })
+    }
 }
 
 impl eframe::App for GuiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// egui的0.37版本把原本的 update 拆成兩階段：
+    /// logic只處理資料（收 channel、讀輸入事件）。
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.收取回報();
+        // 必須在任何 TextEdit 之前讀，否則 Event::Ime / Key 會被吃掉。
+        // logic() 在 ui() 之前執行，正好滿足這個時機需求。
+        let 送出鍵 = self.讀取輸入事件(ctx);
+        // 把結果暫存，讓 ui() 使用
+        self.待送出 = 送出鍵 && !self.注音組字中 && !self.忙碌;
+    }
 
-        egui::TopBottomPanel::top("設定列").show(ctx, |ui| {
+    /// 第二階段：只負責繪製。傳入的 Ui 沒有 margin，需自行包 Panel。
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let 可以送出 = self.待送出;
+
+        egui::Panel::top("設定列").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label("後端");
                 let 原本 = self.選定後端;
@@ -464,7 +515,52 @@ impl eframe::App for GuiApp {
             ui.label(egui::RichText::new(&self.狀態列).small().weak());
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::Panel::bottom("輸入列").show(ui, |ui| {
+            // 送出鍵與注音狀態已在 logic() 讀取
+            // ---- 輸入框與按鈕：預留按鈕寬度，避免 multiline 把按鈕擠出視窗 ----
+            let 按鈕寬 = 76.0;
+            let 間距 = ui.spacing().item_spacing.x;
+            let 輸入框寬 = (ui.available_width() - 按鈕寬 - 間距).max(80.0);
+
+            ui.horizontal(|ui| {
+                let 輸入框 = ui.add_enabled(
+                    !self.忙碌,
+                    egui::TextEdit::multiline(&mut self.輸入框)
+                        .hint_text("輸入訊息（Enter 送出 · Shift+Enter 換行）")
+                        .desired_rows(2)
+                        .desired_width(輸入框寬)
+                        // Enter 不再插入換行，改由我們判斷送出；换行改用 Shift+Enter
+                        .return_key(egui::KeyboardShortcut::new(
+                            egui::Modifiers::SHIFT,
+                            egui::Key::Enter,
+                        )),
+                );
+                // Enter 送出（限非組字、非忙碌，且輸入框有焦點）
+                if 可以送出 && 輸入框.has_focus() {
+                    self.送出();
+                }
+
+                // 按鈕固定在右側，給它明確的寬度與高度；忙碌時整組禁用，即:呈灰
+                let 還沒送出 = !self.忙碌;
+                ui.add_enabled_ui(還沒送出, |ui| {
+                    if ui
+                        .add_sized([按鈕寬, 38.0], egui::Button::new("送出"))
+                        .clicked()
+                    {
+                        self.送出();
+                    }
+                });
+            });
+
+            if self.忙碌 {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("模型處理中…（介面仍可操作）");
+                });
+            }
+        });
+
+        egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
                 .auto_shrink([false; 2])
@@ -476,33 +572,6 @@ impl eframe::App for GuiApp {
                 });
         });
 
-        egui::TopBottomPanel::bottom("輸入列").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let 輸入框 = ui.add_enabled(
-                    !self.忙碌,
-                    egui::TextEdit::singleline(&mut self.輸入框)
-                        .hint_text("輸入訊息後按 Enter 或點送出")
-                        .desired_width(f32::INFINITY),
-                );
-                let 按了確認鍵 = 輸入框.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if 按了確認鍵 {
-                    self.送出();
-                }
-                if ui
-                    .add_enabled(!self.忙碌, egui::Button::new("送出"))
-                    .clicked()
-                {
-                    self.送出();
-                }
-            });
-            if self.忙碌 {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("模型處理中…（介面仍可操作）");
-                });
-            }
-        });
     }
 }
 
