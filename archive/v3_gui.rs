@@ -43,7 +43,7 @@ enum 回報 {
     /// 更新上方狀態列
     狀態(String),
     /// 是否正在等待模型（控制輸入框與 spinner）
-    忙碌(bool),
+    勞形(bool),
 }
 
 fn 推送(送: &Sender<回報>, 上下文: &egui::Context, 訊息: 回報) {
@@ -69,32 +69,14 @@ fn 工具名稱(策略: 工具策略) -> &'static str {
     }
 }
 
-fn 建立利器() -> Vec<Value> {
-    vec![json!({
-        "type": "function",
-        "function": {
-            "name": "run_code",
-            "description": "在隔離的 Podman 沙箱中執行程式碼。支援 python 與 rust 兩種語言。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "語言": {
-                        "type": "string",
-                        "enum": ["python", "rust"],
-                        "description": "欲執行之程式語言"
-                    },
-                    "代碼": {
-                        "type": "string",
-                        "description": "完整之程式碼字串"
-                    }
-                },
-                "required": ["語言", "代碼"]
-            }
-        }
-    })]
+/// 工具宣告集中由 apdater 提供，依後端種類給不同工具：
+/// Ollama 有自建 web_search，DeepSeek 有服務端 deepseek_web_search。
+fn 建立利器(種類: 後端種類) -> Vec<Value> {
+    apdater::建立工具清單(種類)
 }
 
-
+/// egui 內建字型不含中文字，直接載入 Windows 系統字型。
+/// 回傳實際採用的路徑，方便在介面上顯示。
 fn 載入中文字型(ctx: &egui::Context) -> String {
     // 優先選單一 TTF（可變字重檔），TTC 字型集合往後放
     let 候選 = [
@@ -149,10 +131,9 @@ fn 啟動背景工作(指令收: Receiver<指令>, 回報送: Sender<回報>, �
                 }
             };
             let mut 後續上下文: Vec<Message<'static>> = Vec::new();
-            let 利器 = 建立利器();
             let 證據路徑 = 證據路徑();
 
-            
+            // 啟動時的能力探測也是異步，但在這裡用 block_on 完全沒問題，因為這條執行緒本來就專門負責等待，不是畫圖的主執行緒。
             rt.block_on(apdater::預備工具能力(&用戶, &mut *適配器));
 
             推送(&回報送, &上下文, 回報::狀態(狀態文字(&*適配器)));
@@ -164,7 +145,6 @@ fn 啟動背景工作(指令收: Receiver<指令>, 回報送: Sender<回報>, �
                     指令,
                     &mut 適配器,
                     &mut 後續上下文,
-                    &利器,
                     &用戶,
                     &證據路徑,
                     &回報送,
@@ -181,7 +161,6 @@ async fn 處理指令(
     指令: 指令,
     適配器: &mut Box<dyn 後端適配器>,
     上下文: &mut Vec<Message<'static>>,
-    利器: &[Value],
     用戶: &reqwest::Client,
     證據路徑: &str,
     回報送: &Sender<回報>,
@@ -189,14 +168,17 @@ async fn 處理指令(
 ) {
     match 指令 {
         指令::對話(文字) => {
-            推送(回報送, ctx, 回報::忙碌(true));
+            推送(回報送, ctx, 回報::勞形(true));
             上下文.push(Message::起會("user", 文字));
+
+            // 每次對話都依「目前的」後端種類產生工具清單，切換後端後會自動更新
+            let 利器 = 建立利器(適配器.種類());
 
             for 第幾步 in 0..=最大工具步數 {
                 let 請求資訊 = 對話請求 {
                     model: Cow::Borrowed(適配器.模型()),
                     messages: 上下文.as_slice(),
-                    tools: Some(利器),
+                    tools: Some(&利器),
                 };
 
                 let 緩衝 = match apdater::寄柬(用戶, &**適配器, &請求資訊).await {
@@ -244,11 +226,24 @@ async fn 處理指令(
                             ctx,
                             回報::一行(format!("[工具] {}", 工具.function.name)),
                         );
-                        let 執行結果 = run_code(&工具.function, 證據路徑).await;
+                        // 依工具名稱分派：run_code → 沙箱；web_search → Ollama 雲端搜索
+                        let 執行結果 = match 工具.function.name.as_str() {
+                            "web_search" => {
+                                let 參數: Value = serde_json::from_str(&工具.function.arguments)
+                                    .unwrap_or(json!({}));
+                                let 查詢 = 參數["query"].as_str().unwrap_or("");
+                                let 筆數 = 參數["max_results"].as_u64().unwrap_or(5) as u32;
+                                match apdater::執行網頁搜索(用戶, 查詢, 筆數).await {
+                                    Ok(文) => format!("搜索結果：\n{}", 文),
+                                    Err(e) => format!("[搜索失敗] {}", e),
+                                }
+                            }
+                            _ => run_code(&工具.function, 證據路徑).await,
+                        };
                         推送(
                             回報送,
                             ctx,
-                            回報::一行(format!("[沙箱] {}", 執行結果.trim())),
+                            回報::一行(format!("[工具結果] {}", 執行結果.trim())),
                         );
                         上下文.push(Message {
                             role: Cow::Borrowed("tool"),
@@ -285,7 +280,7 @@ async fn 處理指令(
                 break;
             }
 
-            推送(回報送, ctx, 回報::忙碌(false));
+            推送(回報送, ctx, 回報::勞形(false));
         }
 
         指令::切換後端(種類) => match apdater::建立適配器(種類) {
@@ -344,6 +339,7 @@ pub struct GuiApp {
     /// 注音／中文輸入法是否正在組字（Preedit 中）。
     /// 如此組字時`Enter`方為「選字」，而非「送出」。
     注音組字中: bool,
+    /// logic() 算出的送出意圖，暫存給ui()方法使用，且0.37版本將update拆成兩階段
     待送出: bool,
 
     選定後端: 後端種類,
@@ -394,7 +390,7 @@ impl GuiApp {
             match 回報 {
                 回報::一行(文字) => self.聊天記錄.push(文字),
                 回報::狀態(文字) => self.狀態列 = 文字,
-                回報::忙碌(值) => self.忙碌 = 值,
+                回報::勞形(值) => self.忙碌 = 值,
             }
         }
     }
@@ -410,12 +406,12 @@ impl GuiApp {
             let mut 本幀剛選字 = false;
             for 事件 in &i.events {
                 match 事件 {
-                    //此時的 Enter 是「選字」，即:打出ㄅㄨˊㄕˋㄍㄜ ㄇㄣ˙等注音，下方會現虛線，這便是【選自】
+                    //此時的 Enter 是「選字」
                     egui::Event::Ime(egui::ImeEvent::Preedit { .. }) => {
                         self.注音組字中 = true;
                     }
                     // 選字完成：清除組字狀態，但要記住「本幀剛選字」
-                    // Windows 注音'''有時'''會把 Commit 與 Key::Enter 放在同一幀，
+                    // Windows 注音有時會把 Commit 與 Key::Enter 放在同一幀，
                     // 那個 Enter 是選字副作用，不能當成送出。
                     egui::Event::Ime(egui::ImeEvent::Commit(_)) => {
                         self.注音組字中 = false;
@@ -443,7 +439,7 @@ impl eframe::App for GuiApp {
         // 必須在任何 TextEdit 之前讀，否則 Event::Ime / Key 會被吃掉。
         // logic() 在 ui() 之前執行，正好滿足這個時機需求。
         let 送出鍵 = self.讀取輸入事件(ctx);
-        // 把結果暫存，讓 ui() 使用
+        // 把結果暫存，讓 ui() 使用（logic 與 ui 是不同方法，無法共用區域變數）
         self.待送出 = 送出鍵 && !self.注音組字中 && !self.忙碌;
     }
 
@@ -460,12 +456,14 @@ impl eframe::App for GuiApp {
                         後端種類::Ollama => "ollama",
                         後端種類::LMStudio => "lmstudio",
                         後端種類::OpenRouter => "openrouter",
+                        後端種類::DeepSeek => "deepseek",
                     })
                     .width(110.0)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.選定後端, 後端種類::Ollama, "ollama");
                         ui.selectable_value(&mut self.選定後端, 後端種類::LMStudio, "lmstudio");
                         ui.selectable_value(&mut self.選定後端, 後端種類::OpenRouter, "openrouter");
+                        ui.selectable_value(&mut self.選定後端, 後端種類::DeepSeek, "deepseek");
                     });
                 if self.選定後端 != 原本 && !self.忙碌 {
                     let _ = self.指令送.send(指令::切換後端(self.選定後端));
@@ -516,7 +514,7 @@ impl eframe::App for GuiApp {
         });
 
         egui::Panel::bottom("輸入列").show(ui, |ui| {
-            // 送出鍵與注音狀態已在 logic() 讀取
+            // 送出鍵與注音狀態已在 logic() 讀取（那時事件還沒被 TextEdit 吃掉）
             // ---- 輸入框與按鈕：預留按鈕寬度，避免 multiline 把按鈕擠出視窗 ----
             let 按鈕寬 = 76.0;
             let 間距 = ui.spacing().item_spacing.x;
@@ -540,7 +538,7 @@ impl eframe::App for GuiApp {
                     self.送出();
                 }
 
-                // 按鈕固定在右側，給它明確的寬度與高度；忙碌時整組禁用，即:呈灰
+                // 按鈕固定在右側，給它明確的寬度與高度；忙碌時整組禁用（自動灰掉）
                 let 還沒送出 = !self.忙碌;
                 ui.add_enabled_ui(還沒送出, |ui| {
                     if ui
