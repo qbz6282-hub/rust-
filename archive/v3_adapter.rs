@@ -1,3 +1,28 @@
+//! ==================================================================
+//! 多後端統一適配器 (Unified Multi-Backend Adapter)
+//! ==================================================================
+//! 把三種後端格式收斂成同一份內部格式（OpenAI Chat Completions）：
+//!
+//!   ┌───────────────┬───────────────────────────────┬──────────────────┐
+//!   │ 後端           │ 線路格式                       │ 鑑權              │
+//!   ├───────────────┼───────────────────────────────┼──────────────────┤
+//!   │ 1 OpenRouter  │ OpenAI 相容 + 雲端路由標頭       │ Bearer API Key   │
+//!   │ 2 Ollama      │ /v1 相容（預設）或 /api/chat 原生 │ 佔位 Bearer      │
+//!   │ 3 LM Studio   │ OpenAI 相容 / 本地              │ 佔位 Bearer      │
+//!   │ 4 DeepSeek    │ OpenAI 相容 + 服務端工具         │ Bearer API Key   │
+//!   └───────────────┴───────────────────────────────┴──────────────────┘
+//!
+//! 設計重點：
+//!  * 適配器只做「格式翻譯」，HTTP 傳輸統一由 `寄柬()`函數來處理。
+//!  * 若回覆無需改寫，`正規化響應()` 會把原始位元組**原封不動**交回，
+//!    main.rs 的零拷貝反序列化（Cow 借用網路緩衝區）因此得以保留。
+//!  * 工具請求為**可選**：`工具策略 = on / off / auto`。
+//!    auto 會向後端查詢模型能力（Ollama 用 /api/show 的 capabilities
+//!    是否含 "tools"）；查不到時用保守值。off 時 `寄柬()` 會把請求裡
+//!    的 tools、tool_calls、tool 角色訊息全部清掉，送到模型的是純文字。
+//!  * 設定優先順序：命令列/REPL > 環境變數 > config.json > 內建預設。
+//!    在 Windows 上直接改 config.json 即可，不必設環境變數。
+
 use crate::{對話請求, 結局};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -5,7 +30,10 @@ use std::env;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-// 設定讀取（config.json + 環境變數）
+// ==============================
+// 讀取config.json+環境變數
+// ==============================
+
 fn 全域設定() -> &'static Value {
     static 設定: OnceLock<Value> = OnceLock::new();
     設定.get_or_init(|| {
@@ -24,7 +52,7 @@ fn 設定路徑(節點: &str, 鍵: &str) -> String {
     }
 }
 
-
+/// 優先順序：環境變數 > config.json > 內建預設
 pub fn 設定值(節點: &str, 鍵: &str, 環境鍵: &str, 預設: &str) -> String {
     if let Ok(值) = env::var(環境鍵) {
         return 值;
@@ -47,11 +75,16 @@ pub fn 設定布林(節點: &str, 鍵: &str, 環境鍵: &str, 預設: bool) -> b
     )
 }
 
+// ===========
+// 後端種類
+// ===========
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum 後端種類 {
     OpenRouter,
     Ollama,
     LMStudio,
+    DeepSeek,
 }
 
 impl 後端種類 {
@@ -60,14 +93,19 @@ impl 後端種類 {
             "openrouter" | "or" | "雲端" => Some(Self::OpenRouter),
             "ollama" | "ol"|"羊駝" => Some(Self::Ollama),
             "lmstudio" | "lm-studio" | "lms" | "lm" => Some(Self::LMStudio),
+            "deepseek" | "ds" | "深度求索"|"深度探索" => Some(Self::DeepSeek),
             _ => None,
         }
     }
 
     pub fn 選單() -> &'static str {
-        "openrouter | ollama | lmstudio"
+        "openrouter | ollama | lmstudio | deepseek"
     }
 }
+
+// ===========
+// 工具請求策略
+// ===========
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum 工具策略 {
@@ -88,8 +126,8 @@ impl 工具策略 {
 
 }
 
-///每個適配器各自持有一份工具設定。
-///'探測結果'為 None 代表尚未探測（或探測失敗），此時退回 `保守值`。
+/// 每個適配器各自持有一份工具設定。
+/// `探測結果` 為 None 代表尚未探測或探測失敗，此時退回 `保守值`。
 #[derive(Clone, Debug)]
 pub struct 工具設定 {
     pub 策略: 工具策略,
@@ -130,8 +168,14 @@ impl 工具設定 {
         }
     }
 }
-//作統一介面用
+
+// ====================================================
+// 統一介面：所有方法皆為同步、物件安全（即:可放进 Box<dyn Trait>）
+// ====================================================
+
 pub trait 後端適配器 {
+    /// 後端種類（用來决定工具清單）
+    fn 種類(&self) -> 後端種類;
     /// 顯示名稱
     fn 名稱(&self) -> &'static str;
     /// 線路格式說明
@@ -145,7 +189,7 @@ pub trait 後端適配器 {
     /// HTTP 標頭（含授權）
     fn 標頭(&self) -> 結局<Vec<(&'static str, String)>>;
 
-    // ---- 工具能力 ----
+
     fn 工具設定(&self) -> &工具設定;
     fn 工具設定可變(&mut self) -> &mut 工具設定;
     /// (探測用 URL, POST body)；None 代表此後端沒有能力查詢 API
@@ -169,10 +213,15 @@ pub trait 後端適配器 {
     }
 }
 
+// ==================================================================
+// 共用工具
+// ==================================================================
+
 fn 修剪尾斜線(網址: &str) -> String {
     網址.trim_end_matches('/').to_string()
 }
 
+/// Ollama /api/show 回覆是否帶有 tools 能力
 fn 解析能力(回覆: &Value) -> bool {
     回覆
         .get("capabilities")
@@ -181,11 +230,10 @@ fn 解析能力(回覆: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// 只在`「auto與尚未探測和後端有探測 API」`時發一次能力查詢。
 /// 失敗時保持 None（用保守值），可用 `重探工具能力()` 重試。
 pub async fn 預備工具能力(用戶: &Client, 適配器: &mut dyn 後端適配器) {
-    if 適配器.工具設定().策略 != 工具策略::自動
-        || 適配器.工具設定().探測結果.is_some()
-    {
+    if 適配器.工具設定().策略 != 工具策略::自動 || 適配器.工具設定().探測結果.is_some() {
         return;
     }
     let Some((網址, 請求體)) = 適配器.能力探測() else {
@@ -218,8 +266,8 @@ pub async fn 重探工具能力(用戶: &Client, 適配器: &mut dyn 後端適�
     預備工具能力(用戶, 適配器).await;
 }
 
-/// 關掉工具時，把請求裡所有工具痕跡清乾淨：
-/// 移除 tools 欄位、role=tool 的歷史訊息，以及殘留的 tool_calls / tool_call_id / tool_name。
+/// 關掉工具時，把請求裡所有工具痕跡清乾淨。
+/// 移除 tools 欄位與role=tool 的歷史訊息，以及殘留的 tool_calls / tool_call_id / tool_name。
 /// 沒有任何東西需要移除時，交回原始位元組（不重新序列化）。
 fn 濾為純文字請求(體: Vec<u8>) -> 結局<Vec<u8>> {
     let mut 根: Value = serde_json::from_slice(&體)?;
@@ -253,7 +301,7 @@ fn 濾為純文字請求(體: Vec<u8>) -> 結局<Vec<u8>> {
     }
 }
 
-/// 多模態 content 陣列 → 純文字（OpenRouter 部分模型會回 [{type:"text",text:...}]）
+/// 多模態 content 陣列 -> 純文字（OpenRouter 部分模型會回 [{type:"text",text:...}]）
 fn 取出文字(片段組: &Value) -> String {
     片段組
         .as_array()
@@ -317,7 +365,7 @@ fn 正規化訊息(mut 訊息: Value) -> (Value, bool) {
     (訊息, 變動)
 }
 
-/// OpenAI 相容格式的共用正規化（OpenRouter / Ollama v1 / LM Studio 皆走這裡）
+/// OpenAI 相容格式的共用正規化（OpenRouter / Ollama / LM Studio 皆行本道）
 fn 正規化相容回覆(原始: Vec<u8>, 名稱: &str) -> 結局<Vec<u8>> {
     let 根: Value = match serde_json::from_slice(&原始) {
         Ok(v) => v,
@@ -344,7 +392,7 @@ fn 正規化相容回覆(原始: Vec<u8>, 名稱: &str) -> 結局<Vec<u8>> {
         }
     }
 
-    // 關鍵：沒有差異就把原始位元組還回去，後續依舊是零拷貝借用
+    //沒有差異就把原始位元組還回去，後續依舊是零拷貝借用
     if 已變動 {
         Ok(serde_json::to_vec(&根)?)
     } else {
@@ -364,6 +412,7 @@ pub struct OpenRouter {
 }
 
 impl 後端適配器 for OpenRouter {
+    fn 種類(&self) -> 後端種類 { 後端種類::OpenRouter }
     fn 名稱(&self) -> &'static str {
         "OpenRouter"
     }
@@ -437,6 +486,7 @@ pub struct Ollama {
 }
 
 impl 後端適配器 for Ollama {
+    fn 種類(&self) -> 後端種類 { 後端種類::Ollama }
     fn 名稱(&self) -> &'static str {
         "Ollama (本地)"
     }
@@ -546,6 +596,7 @@ pub struct LMStudio {
 }
 
 impl 後端適配器 for LMStudio {
+    fn 種類(&self) -> 後端種類 { 後端種類::LMStudio }
     fn 名稱(&self) -> &'static str {
         "LM Studio (本地)"
     }
@@ -584,11 +635,169 @@ impl 後端適配器 for LMStudio {
 }
 
 // ==================================================================
+// DeepSeek — OpenAI 相容 + 服務端工具（網頁搜索）
+// ==================================================================
+
+/// 產生帶有當天日期的 latest_reminder 系統訊息。
+/// DeepSeek 官方要求：每次請求都要注入，否則模型的「今天」會映射到訓練資料
+/// 裡最密集的時間點，搜出一堆歷史新聞（例如 2026 年 2 月）。
+/// 格式：年-月-日,星期,地點,介面,語言
+pub fn 日期提醒() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // 用系統時間算本地年月日（不引進 chrono，直接用 days 推算）
+    let 秒 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let 天 = 秒.div_euclid(86400) + 4; // Unix 紀元是星期四，東京/台北 +8 小時約落在同一天
+    let (年, 月, 日) =  civil_from_days(天);
+    let 星期 = ["日", "一", "二", "三", "四", "五", "六"][(天 + 4).rem_euclid(7) as usize];
+    format!(
+        "{:04}-{:02}-{:02},星期{},本地,桌面程式,中文",
+        年, 月, 日, 星期
+    )
+}
+
+/// Howard Hinnant 的 civil_from_days 演算法：從 Unix days 轉成 (年, 月, 日)
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    (y + if m <= 2 { 1 } else { 0 }, m, d)
+}
+
+/// 依後端產生工具宣告清單。
+/// - Ollama：標準 function 工具，模型回 tool_calls 後由我們自己呼叫
+///   ollama.com 的 web_search / web_fetch（需 ollama.api_key）
+/// - DeepSeek：服務端工具，宣告 type 即可，搜尋與拼接由雲端完成
+/// - 其他：僅 run_code
+pub fn 建立工具清單(種類: 後端種類) -> Vec<Value> {
+    let 執行程式 = json!({
+        "type": "function",
+        "function": {
+            "name": "run_code",
+            "description": "在隔離的 Podman 沙箱中執行程式碼。支援 python 與 rust 兩種語言。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "語言": {
+                        "type": "string",
+                        "enum": ["python", "rust"],
+                        "description": "欲執行之程式語言"
+                    },
+                    "代碼": {
+                        "type": "string",
+                        "description": "完整之程式碼字串"
+                    }
+                },
+                "required": ["語言", "代碼"]
+            }
+        }
+    });
+
+    match 種類 {
+        後端種類::Ollama => vec![
+            執行程式,
+            json!({
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "搜尋網路取得最新資訊。當問題涉及近期事件、即時資訊或你不確定的事實時使用。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "搜尋關鍵字"
+                            },
+                            "max_results": {
+                                "type": "integer",
+                                "description": "回傳筆數（建議 3～5）"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }),
+        ],
+        後端種類::DeepSeek => vec![
+            執行程式,
+            json!({"type": "deepseek_web_search"}),
+            json!({"type": "deepseek_read_url"}),
+        ],
+        _ => vec![執行程式],
+    }
+}
+
+pub struct DeepSeek {
+    端點: String,
+    模型: String,
+    金鑰: String,
+    工具: 工具設定,
+}
+
+impl 後端適配器 for DeepSeek {
+    fn 種類(&self) -> 後端種類 { 後端種類::DeepSeek }
+    fn 名稱(&self) -> &'static str {
+        "DeepSeek (深度求索)"
+    }
+    fn 格式(&self) -> &'static str {
+        "OpenAI 相容 · 服務端工具"
+    }
+    fn 端點(&self) -> &str {
+        &self.端點
+    }
+    fn 模型(&self) -> &str {
+        &self.模型
+    }
+    fn 改模型(&mut self, 模型: String) {
+        self.模型 = 模型;
+        self.工具.探測結果 = None;
+    }
+    fn 標頭(&self) -> 結局<Vec<(&'static str, String)>> {
+        if self.金鑰.trim().is_empty() {
+            return Err("DeepSeek 尚未設定 API key（config.json 的 deepseek.api_key 或 DEEPSEEK_API_KEY）".into());
+        }
+        Ok(vec![
+            ("Content-Type", "application/json".to_string()),
+            ("Authorization", format!("Bearer {}", self.金鑰)),
+        ])
+    }
+    fn 工具設定(&self) -> &工具設定 {
+        &self.工具
+    }
+    fn 工具設定可變(&mut self) -> &mut 工具設定 {
+        &mut self.工具
+    }
+    fn 能力探測(&self) -> Option<(String, Value)> {
+        // deepseek-flash 支援工具，不必探測
+        None
+    }
+    fn 編碼請求(&self, 請求: &對話請求<'_>) -> 結局<Vec<u8>> {
+        // 深求要求每次請求注入 latest_reminder（當天日期），否則會搜到歷史新聞
+        let mut 請求體 = serde_json::to_value(請求)?;
+        if let Some(訊息陣列) = 請求體.get_mut("messages").and_then(Value::as_array_mut) {
+            訊息陣列.insert(
+                0,
+                json!({"role": "system", "content": format!("latest_reminder: {}", 日期提醒())}),
+            );
+        }
+        Ok(serde_json::to_vec(&請求體)?)
+    }
+}
+
+// ==================================================================
 // 工廠 + 共用傳輸層
 // ==================================================================
 
-/// 優先順序：後端專屬環境變數 > 全域環境變數 AI_TOOLS
-///          > config.json 後端欄位 > config.json 全域欄位 > auto
+/// 優先順序：後端專屬環境變數 -> 全域環境變數 AI_TOOLS
+///          -> config.json 後端欄位 -> config.json 全域欄位 -> auto
 fn 讀取策略(節點: &str, 環境鍵: &str) -> 工具策略 {
     let 設定檔值 = 全域設定()
         .pointer(&設定路徑(節點, "tools"))
@@ -654,6 +863,73 @@ pub fn 建立適配器(種類: 後端種類) -> 結局<Box<dyn 後端適配器>>
                 工具: 工具設定::新建(讀取策略("lmstudio", "LMSTUDIO_TOOLS"), false),
             }))
         }
+        後端種類::DeepSeek => {
+            let 基底 = 修剪尾斜線(&設定值(
+                "deepseek",
+                "base_url",
+                "DEEPSEEK_BASE_URL",
+                "https://api.deepseek.com/v1",
+            ));
+            Ok(Box::new(DeepSeek {
+                端點: format!("{}/chat/completions", 基底),
+                模型: 設定值("deepseek", "model", "DEEPSEEK_MODEL", "deepseek-flash"),
+                金鑰: 設定值("deepseek", "api_key", "DEEPSEEK_API_KEY", ""),
+                // deepseek-flash 支援服務端工具，保守值給 true
+                工具: 工具設定::新建(讀取策略("deepseek", "DEEPSEEK_TOOLS"), true),
+            }))
+        }
+    }
+}
+
+/// 呼叫 Ollama 官方網頁搜索 API（雲端服務，需 Ollama 帳號 API key）。
+/// 回傳格式化後的文字，方便直接塞進 role=tool 訊息。
+pub async fn 執行網頁搜索(用戶: &Client, 查詢: &str, 最大筆數: u32) -> 結局<String> {
+    let 金鑰 = 設定值("ollama", "api_key", "OLLAMA_API_KEY", "");
+    if 金鑰.trim().is_empty() {
+        return Err("尚未設定 Ollama API key（config.json 的 ollama.api_key 或 OLLAMA_API_KEY）".into());
+    }
+    let 端點 = 修剪尾斜線(&設定值(
+        "ollama",
+        "search_url",
+        "OLLAMA_SEARCH_URL",
+        "https://ollama.com/api",
+    ));
+
+    let 回應 = 用戶
+        .post(format!("{}/web_search", 端點))
+        .bearer_auth(金鑰)
+        .json(&json!({
+            "query": 查詢,
+            "max_results": 最大筆數.max(1).min(10),
+        }))
+        .send()
+        .await?;
+
+    if !回應.status().is_success() {
+        let 狀態 = 回應.status();
+        let 內文 = 回應.text().await.unwrap_or_default();
+        return Err(format!("Ollama 搜索失敗 HTTP {}：{}", 狀態, 內文).into());
+    }
+
+    let 值: Value = 回應.json().await?;
+    let 結果陣列 = 值.get("results").and_then(Value::as_array).ok_or("搜索回傳缺少 results")?;
+
+    let 摘要: Vec<String> = 結果陣列
+        .iter()
+        .map(|r| {
+            let 標題 = r.get("title").and_then(Value::as_str).unwrap_or("");
+            let 網址 = r.get("url").and_then(Value::as_str).unwrap_or("");
+            let 內容 = r.get("content").and_then(Value::as_str).unwrap_or("");
+            // 截斷避免撐爆上下文（官方建議單則不超過約 8000 字元）
+            let 內容: String = 內容.chars().take(1500).collect();
+            format!("【{}】{}\n{}\n", 標題, 網址, 內容)
+        })
+        .collect();
+
+    if 摘要.is_empty() {
+        Ok("（搜索無結果）".to_string())
+    } else {
+        Ok(摘要.join("\n"))
     }
 }
 
@@ -667,7 +943,7 @@ pub async fn 寄柬(
         .parse()
         .unwrap_or(300);
 
-    // 工具開關在傳輸層統一守門：即使呼叫端傳了 tools，off/auto(false) 也不會送出去
+    // 工具開關在傳輸層統一守門，即使呼叫端傳了 tools，off/auto(false) 也不會送出去
     let 體 = 適配器.編碼請求(請求)?;
     let 體 = if 適配器.送出工具() {
         體
@@ -899,5 +1175,48 @@ mod 測試 {
         assert_eq!(v["stream"], false);
         assert_eq!(v["messages"][1]["tool_name"], "行沙箱代碼");
         assert!(v["messages"][1].get("tool_call_id").is_none());
+    }
+
+    #[test]
+    fn 四種後端端點與工具清單() {
+        assert_eq!(後端種類::解析("deepseek"), Some(後端種類::DeepSeek));
+        assert_eq!(後端種類::解析("ds"), Some(後端種類::DeepSeek));
+        assert!(後端種類::選單().contains("deepseek"));
+
+        // Ollama 有自建 web_search
+        let ollama工具 = 建立工具清單(後端種類::Ollama);
+        assert!(ollama工具.iter().any(|t| t["function"]["name"] == "web_search"));
+        // DeepSeek 是服務端工具（type 不可逆 function）
+        let ds工具 = 建立工具清單(後端種類::DeepSeek);
+        assert!(ds工具.iter().any(|t| t["type"] == "deepseek_web_search"));
+        assert!(ds工具.iter().any(|t| t["type"] == "deepseek_read_url"));
+        // 其他後端只有 run_code
+        let or工具 = 建立工具清單(後端種類::OpenRouter);
+        assert_eq!(or工具.len(), 1);
+    }
+
+    #[test]
+    fn deepseek請求自動注入日期提醒() {
+        let 適配器 = DeepSeek {
+            端點: "https://api.deepseek.com/v1/chat/completions".to_string(),
+            模型: "deepseek-flash".to_string(),
+            金鑰: "test".to_string(),
+            工具: 工具設定::新建(工具策略::開啟, true),
+        };
+        let 訊息集 = vec![Message::起會("user", "今天的新聞")];
+        let 請求 = 對話請求 {
+            model: Cow::Borrowed("deepseek-flash"),
+            messages: &訊息集,
+            tools: None,
+        };
+        let 體 = 適配器.編碼請求(&請求).unwrap();
+        let v: Value = serde_json::from_slice(&體).unwrap();
+        let 首則 = &v["messages"][0];
+        assert_eq!(首則["role"], "system");
+        let 內容 = 首則["content"].as_str().unwrap();
+        assert!(內容.contains("latest_reminder"));
+        assert!(內容.contains("星期"));
+        // 日期格式 YYYY-MM-DD
+        assert!(內容.chars().filter(|c| *c == '-').count() >= 2);
     }
 }
