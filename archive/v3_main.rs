@@ -1,23 +1,4 @@
 mod apdater;
-
-use base64::{engine::general_purpose, Engine as _};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::borrow::Cow;
-use std::error::Error;
-use std::io::Write;
-use clap::Parser;
-
-use apdater::{建立適配器, 後端種類, 後端適配器, 工具策略};
-
-// 定義專用的 Result 型別，以兼容 tokio 的非同步錯誤
-pub(crate) type 結局<T> = Result<T, Box<dyn Error + Send + Sync>>;
-
-// ================= 結構體定義（全面支援零拷貝借用） =================
-
-#[derive(Serialize, Debug)]
-pub(crate) struct 對話請求<'q> {mod apdater;
 mod gui;
 
 use base64::{engine::general_purpose, Engine as _};
