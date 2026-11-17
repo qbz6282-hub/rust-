@@ -47,7 +47,8 @@ impl<'q> Message<'q> {
         }
     }
 
-    /// 關鍵轉換方法：當這輪對話結束，需要把借用自網路緩衝區的臨時訊息，轉化為擁有獨立所有權的 'static 訊息，才能安全存入永久的 `上下文` Vec 中
+    /// 關鍵轉換方法：當這輪對話結束，需要把借用自網路緩衝區的臨時訊息，
+    /// 轉化為擁有獨立所有權的 'static 訊息，才能安全存入永久的 `上下文` Vec 中
     fn 轉為永久所有權(self) -> Message<'static> {
         Message {
             role: Cow::Owned(self.role.into_owned()),
@@ -88,12 +89,13 @@ struct FunctionCall {
 
 /// Podman 沙箱掛載來源；可用 config.json 的 evidence_path 或 AI_EVIDENCE_PATH 覆寫
 pub(crate) fn 證據路徑() -> String {
-    apdater::設定值("", "evidence_path", "AI_EVIDENCE_PATH", "/mnt/c/善")
+    apdater::設定值("", "evidence_path", "AI_EVIDENCE_PATH", "C:/善")
 }
 
 /// 優先順序：命令列第一個參數 > AI_BACKEND > config.json 的 backend > 預設 ollama
 pub(crate) fn 讀取後端種類() -> 後端種類 {
-    // 只取「非旗標」的第一個位置參數；--cli、--help 這類開頭 -- 的一律略過，否則 GUI 模式或帶旗標啟動時會把旗標誤認成後端名稱。
+    // 只取「非旗標」的第一個位置參數；--cli、--help 這類開頭 -- 的一律略過，
+    // 否則 GUI 模式或帶旗標啟動時會把旗標誤認成後端名稱。
     let 指定 = std::env::args()
         .skip(1)
         .find(|a| !a.starts_with("--"))
@@ -132,8 +134,10 @@ fn 工具痕跡數(上下文: &[Message<'static>]) -> usize {
 // ================= 進入點 =================
 
 fn main() -> 結局<()> {
-    // 預設為圖形介面；加 --cli 回到原本的命令列模式。eframe::run_native 會接管主執行緒，所以 main 必須是同步函式，
-    // async 的 runtime 交給 GUI 的背景工作執行緒（見 gui.rs）或 CLI 自建。
+
+    // 預設啟動圖形介面；加 --cli 回到原本的命令列模式。
+    // eframe::run_native 會接管主執行緒，所以 main 必須是同步函式，
+    // async 的運行時交給 GUI 的背景工作執行緒（見 gui.rs）或 CLI 自建。
     if !std::env::args().any(|a| a == "--cli") {
         return gui::啟動();
     }
@@ -149,39 +153,13 @@ async fn 命令列模式() -> 結局<()> {
     let mut 適配器 = 建立適配器(讀取後端種類())?;
     // auto 模式會向後端查一次模型能力（Ollama 用 /api/show）
     apdater::預備工具能力(&用戶, &mut *適配器).await;
-    let 利器 = vec![json!({
-        "type": "function",
-        "function": {
-            "name": "run_code",
-            "description": "在隔離的 Podman 沙箱中執行程式碼。支援 python 與 rust 兩種語言。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "語言": {
-                        "type": "string",
-                        "enum": ["python", "rust"],
-                        "description": "欲執行之程式語言"
-                    },
-                    "代碼": {
-                        "type": "string",
-                        "description": "完整之程式碼字串"
-                    }
-                },
-                "required": ["語言", "代碼"]
-            }
-        }
-    })];
 
     println!("?!善善!? === 多後端統一適配器 · 零拷貝滾木沙箱模型 === ?!善善!?");
     印出後端資訊(&*適配器);
     println!("(輸入 '跑路' 或 '滾木' 離開程式)");
     println!("指令: '後端 <{}>' · '模型 <名稱>' · '工具 on|off|auto|重探' · '清空' · '後端' 查看現況", 後端種類::選單());
 
-    let mut 工具步數 = 0;
-    const 最大工具步數: usize = 5;
-
     loop {
-        工具步數 += 1;
 
         print!("\n尔言:\n");
         std::io::stdout().flush()?;
@@ -192,8 +170,7 @@ async fn 命令列模式() -> 結局<()> {
         if 提示詞.is_empty() || 提示詞 == "跑路" || 提示詞 == "滾木" {
             break;
         }
-
-        // ---- REPL 控制指令（不送進模型） ----
+        // ---- REPL 控制指令 ----
         if 提示詞 == "後端" || 提示詞 == "工具" {
             印出後端資訊(&*適配器);
             continue;
@@ -206,7 +183,7 @@ async fn 命令列模式() -> 結局<()> {
                         apdater::預備工具能力(&用戶, &mut *適配器).await;
                         印出後端資訊(&*適配器);
                     }
-                    Err(e) => eprintln!("[錯誤] 無法建立適配器: {}", e),
+                    Err(e) => eprintln!("[錯誤]根本就沒有這樣的後端: {}", e),
                 },
                 None => eprintln!("可用後端：{}", 後端種類::選單()),
             }
@@ -214,7 +191,7 @@ async fn 命令列模式() -> 結局<()> {
         }
         if let Some(名) = 提示詞.strip_prefix("模型 ") {
             if 名.trim().is_empty() {
-                eprintln!("請輸入模型名稱，例如：模型 qwen2.5vl:7b");
+                eprintln!("根本就沒有這樣的模型名稱，但名稱格式有:qwen2.5vl:7b");
             } else {
                 適配器.改模型(名.trim().to_string());
                 apdater::重探工具能力(&用戶, &mut *適配器).await;
@@ -255,79 +232,94 @@ async fn 命令列模式() -> 結局<()> {
 
         // Agent 內部迴圈
         loop {
+            // 每次對話依目前後端種類產生工具清單（切換後端後自動更新）
+            let 利器 = apdater::建立工具清單(適配器.種類());
             // 模型識別字由適配器決定；tools 一律先給，是否真的送出由傳輸層依工具策略把關
-            let 請求資訊 = 對話請求 {
-                model: Cow::Borrowed(適配器.模型()),
-                messages: &上下文,
-                tools: Some(&利器),
-            };
+            const 最大工具步數: usize = 5;
+            for 第幾步 in 0..=最大工具步數 {
+                let 請求資訊 = 對話請求 {
+                    model: Cow::Borrowed(適配器.模型()),
+                    messages: &上下文,
+                    tools: Some(&利器),
+                };
 
-            // 寄柬：統一傳輸層只把原始網路緩衝區 (Bytes) 撈回來，生命週期由當前迴圈掌控
-            match apdater::寄柬(&用戶, &*適配器, &請求資訊).await {
-                Ok(正規化緩衝區) => {
-                    // 直接從緩衝區切片進行零拷貝再反序列化！
-                    // 若該後端格式無需改寫，這裡拿到的就是未經複製的原始 字節(bytes)。
-                    let 響應: 對話響應 = match serde_json::from_slice(&正規化緩衝區) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            eprintln!(
-                                "[解析錯誤] JSON 反序列化失敗: {}\n原始回傳: {}",
-                                e,
-                                String::from_utf8_lossy(&正規化緩衝區)
-                            );
-                            上下文.pop();
+                match apdater::寄柬(&用戶, &*適配器, &請求資訊).await {
+                    Ok(正規化緩衝區) => {
+                        let 響應: 對話響應 = match serde_json::from_slice(&正規化緩衝區) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                eprintln!(
+                                    "[解析錯誤] JSON 反序列化失敗: {}\n原始回傳: {}",
+                                    e,
+                                    String::from_utf8_lossy(&正規化緩衝區)
+                                );
+                                上下文.pop();
+                                break;
+                            }
+                        };
+
+                        let Some(首選) = 響應.choices.into_iter().next() else {
+                            println!("[警告] {} 未回傳任何有效選項", 適配器.名稱());
                             break;
-                        }
-                    };
+                        };
+                        let 模型訊息 = 首選.訊息;
+                        let 允許工具 = 適配器.送出工具();
 
-                    let Some(首選) = 響應.choices.into_iter().next() else {
-                        println!("[警告] {} 未回傳任何有效選項", 適配器.名稱());
+                        // 3. 移除原本會導致 Panic 的 `.unwrap()` 判斷，直接進入安全的 if let Some
+                        if let Some(工具集) = 模型訊息.tool_calls.as_ref().filter(|組| 允許工具 && !組.is_empty()) {
+                            上下文.push(模型訊息.clone().轉為永久所有權());
+
+                            for 工具 in 工具集 {
+                                println!("[系統] {} 請求執行工具: {}", 適配器.名稱(), 工具.function.name);
+                                // 依工具名稱分派：run_code → 沙箱；web_search → Ollama 雲端搜索
+                                let 執行結果 = match 工具.function.name.as_str() {
+                                    "web_search" => {
+                                        let 參數: Value = serde_json::from_str(&工具.function.arguments)
+                                            .unwrap_or(json!({}));
+                                        let 查詢 = 參數["query"].as_str().unwrap_or("");
+                                        let 筆數 = 參數["max_results"].as_u64().unwrap_or(5) as u32;
+                                        match apdater::執行網頁搜索(&用戶, 查詢, 筆數).await {
+                                            Ok(文) => format!("搜索結果：\n{}", 文),
+                                            Err(e) => format!("[搜索失敗] {}", e),
+                                        }
+                                    }
+                                    _ => run_code(&工具.function, &證據路徑).await,
+                                };
+                                println!("[工具回報] {}", 執行結果.trim());
+                                let 工具回覆 = Message {
+                                    role: Cow::Borrowed("tool"),
+                                    content: Some(Cow::Owned(執行結果)),
+                                    tool_calls: None,
+                                    tool_call_id: Some(工具.id.clone()),
+                                };
+                                上下文.push(工具回覆);
+                            }
+
+                            // 4. 在執行完工具準備進入下一輪前，檢查是否已達最大步數上限
+                            if 第幾步 == 最大工具步數 {
+                                println!("[系統熔斷] 模型連續呼叫工具超過 {} 次，已強制中斷迴圈。", 最大工具步數);
+                                break;
+                            }
+                            continue;
+                        }
+
+                        if let Some(內容) = &模型訊息.content {
+                            println!("模型:\n{}", 內容);
+                        }
+                        if 模型訊息.tool_calls.is_some() && !允許工具 {
+                            println!("[提示] 工具呼叫已停用，忽略模型回傳的 tool_calls（純文字模式）");
+                        }
+
+                        上下文.push(模型訊息.轉為永久所有權());
                         break;
-                    };
-                    let 模型訊息 = 首選.訊息;
-                    let 允許工具 = 適配器.送出工具();
-
-                    // 純文字模式下，即使模型幻覺出 tool_calls 也不啟動 Podman。
-                    if let Some(工具集) = 模型訊息.tool_calls.as_ref().filter(|組| 允許工具 && !組.is_empty()) {
-                        上下文.push(模型訊息.clone().轉為永久所有權());
-
-                        for 工具 in 工具集 {
-                            println!("[系統] {} 請求執行工具: {}", 適配器.名稱(), 工具.function.name);
-                            let 執行結果 = run_code(&工具.function, &證據路徑).await;
-                            println!("[沙箱回報] {}", 執行結果.trim());
-                            let 工具回覆 = Message {
-                                role: Cow::Borrowed("tool"),
-                                content: Some(Cow::Owned(執行結果)),
-                                tool_calls: None,
-                                tool_call_id: Some(工具.id.clone()),
-                            };
-                            上下文.push(工具回覆);
-                        }
-                        // 迴圈於此處進入下一輪，而上一輪的緩衝區在此處被安全釋放
-                        continue;
                     }
-
-                    // 列印模型回覆時，直接讀取借用自緩衝區的指標，完全沒有發生任何字串複製
-                    if let Some(內容) = &模型訊息.content {
-                        println!("模型:\n{}", 內容);
+                    Err(e) => {
+                        println!("[錯誤] 請求失敗: {}", e);
+                        上下文.pop();
+                        break;
                     }
-                    if 模型訊息.tool_calls.is_some() && !允許工具 {
-                        println!("[提示] 工具呼叫已停用，忽略模型回傳的 tool_calls（純文字模式）");
-                    }
-
-                    上下文.push(模型訊息.轉為永久所有權());
-                    break;
-                }
-                Err(e) => {
-                    println!("[錯誤] 請求失敗: {}", e);
-                    上下文.pop();
-                    break;
                 }
             }
-        }
-        if 工具步數 > 最大工具步數 {
-            println!("[系統熔斷] 模型連續呼叫工具超過 {} 次，已強制中斷迴圈。", 最大工具步數);
-            break;
         }
     }
     Ok(())
@@ -392,5 +384,3 @@ async fn run_code(術: &FunctionCall, 證據路徑: &str) -> String {
         Err(e) => format!("無法啟動 Podman 沙箱 (請確認 Podman Machine 已啟動): {}", e),
     }
 }
-
-    
